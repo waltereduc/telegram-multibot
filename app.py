@@ -40,9 +40,6 @@ PROMPTS = {
 # Хранилище выбора пользователя (в памяти)
 user_modes = {}
 
-# Инициализация бота
-application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
 # Кнопки тем
 def get_theme_buttons():
     keyboard = [
@@ -84,7 +81,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     system_prompt = PROMPTS[mode]
 
     try:
-        # Убираем лишние пробелы в URL (была ошибка!)
         response = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={
@@ -109,11 +105,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text("⚠️ Ошибка соединения. Попробуй снова.")
 
-# Регистрация обработчиков
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CallbackQueryHandler(button_handler))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
 # Flask endpoint
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -125,14 +116,22 @@ def webhook():
 async def process_update_async(update):
     await application.process_update(update)
 
+# Инициализация бота (БЕЗ .build()!)
+application = Application(token=TELEGRAM_BOT_TOKEN)
+
+# Регистрация обработчиков
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CallbackQueryHandler(button_handler))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
 # Установка webhook при запуске
-@app.route('/setwebhook', methods=['GET'])
-def set_webhook():
+@app.before_first_request
+def setup_webhook():
     try:
         asyncio.run(application.bot.set_webhook(url=WEBHOOK_URL))
-        return jsonify({"ok": True, "webhook_url": WEBHOOK_URL})
+        print(f"✅ Webhook set to {WEBHOOK_URL}")
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
+        print(f"⚠️ Failed to set webhook: {e}")
 
 # Запуск
 if __name__ == "__main__":
