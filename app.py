@@ -130,6 +130,6 @@ application.add_handler(CallbackQueryHandler(button_handler))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
 if __name__ == "__main__":
-    # Для локального запуска (не используется на Render)
+    # Для локального запуска
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
 
-    app.run(port=5000)
