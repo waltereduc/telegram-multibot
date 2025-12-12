@@ -1,10 +1,7 @@
 import os
 import asyncio
 import requests
-print("=" * 50)
-print("✅ BOT STARTING WITH CORRECT INITIALIZATION")
-print("=" * 50)
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, g
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
@@ -15,6 +12,9 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://telegram-multibot.onrender.com/w
 # ===================================================================
 
 app = Flask(__name__)
+
+# Флаг для однократной инициализации
+app.config['WEBHOOK_SET'] = False
 
 # Промпты для каждой темы
 PROMPTS = {
@@ -111,15 +111,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Flask endpoint
 @app.route('/webhook', methods=['POST'])
 def webhook():
+    # Устанавливаем webhook при первом запросе
+    if not app.config['WEBHOOK_SET']:
+        setup_webhook()
+    
     json_str = request.get_data().decode('UTF-8')
     update = Update.de_json(json_str, application.bot)
-    asyncio.run(process_update_async(update))
+    
+    # Асинхронная обработка с синхронным Flask
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(application.process_update(update))
+    finally:
+        loop.close()
+    
     return jsonify({"ok": True})
 
-async def process_update_async(update):
-    await application.process_update(update)
-
-# Инициализация бота (ПРАВИЛЬНЫЙ СПОСОБ ДЛЯ v20+)
+# Инициализация бота (ПРАВИЛЬНЫЙ СПОСОБ)
 application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
 # Регистрация обработчиков
@@ -127,12 +136,14 @@ application.add_handler(CommandHandler("start", start))
 application.add_handler(CallbackQueryHandler(button_handler))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-# Установка webhook при запуске
-@app.before_first_request
+# Функция установки webhook (вызывается только один раз)
 def setup_webhook():
     try:
-        asyncio.run(application.bot.set_webhook(url=WEBHOOK_URL))
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(application.bot.set_webhook(url=WEBHOOK_URL))
         print(f"✅ Webhook set to {WEBHOOK_URL}")
+        app.config['WEBHOOK_SET'] = True
     except Exception as e:
         print(f"⚠️ Failed to set webhook: {e}")
 
@@ -140,5 +151,6 @@ def setup_webhook():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     print(f"✅ Starting Flask on port {port}")
+    # Устанавливаем webhook сразу при запуске
+    setup_webhook()
     app.run(host="0.0.0.0", port=port, debug=False)
-
