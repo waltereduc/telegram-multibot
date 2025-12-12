@@ -1,14 +1,15 @@
-# app.py
 import os
+import asyncio
 import requests
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-# ============ НАСТРОЙКИ — ВСТАВЬ СВОИ ТОКЕНЫ ЗДЕСЬ ============
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # ← сюда вставь токен от @BotFather
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # ← сюда вставь ключ от OpenRouter
-# =============================================================
+# ============ НАСТРОЙКИ — БЕРЕМ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ============
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://telegram-multibot.onrender.com/webhook")
+# ===================================================================
 
 app = Flask(__name__)
 
@@ -36,8 +37,11 @@ PROMPTS = {
     )
 }
 
-# Хранилище выбора пользователя (в памяти — без БД)
+# Хранилище выбора пользователя (в памяти)
 user_modes = {}
+
+# Инициализация бота
+application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
 # Кнопки тем
 def get_theme_buttons():
@@ -49,14 +53,10 @@ def get_theme_buttons():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# Обработка /start
+# Обработчики
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Привет! Выбери тему, и я помогу:",
-        reply_markup=get_theme_buttons()
-    )
+    await update.message.reply_text("Привет! Выбери тему, и я помогу:", reply_markup=get_theme_buttons())
 
-# Обработка выбора темы
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -70,33 +70,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "parenting": "«Совет родителям»",
         "ethics": "«Этическая дилемма»"
     }
-    await query.edit_message_text(
-        text=f"Выбрана тема: {theme_names[mode]}\n\nТеперь напиши свой вопрос:"
-    )
+    await query.edit_message_text(text=f"Выбрана тема: {theme_names[mode]}\n\nТеперь напиши свой вопрос:")
 
-# Обработка текстового сообщения
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_text = update.message.text
 
-    # Если тема не выбрана — напомним
     if chat_id not in user_modes:
-        await update.message.reply_text(
-            "Сначала выбери тему:",
-            reply_markup=get_theme_buttons()
-        )
+        await update.message.reply_text("Сначала выбери тему:", reply_markup=get_theme_buttons())
         return
 
     mode = user_modes[chat_id]
     system_prompt = PROMPTS[mode]
 
-    # Запрос к OpenRouter (Qwen)
     try:
+        # Убираем лишние пробелы в URL (была ошибка!)
         response = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "HTTP-Referer": "https://t.me/your_bot",  # можно оставить как есть
+                "HTTP-Referer": "https://t.me/your_bot",
                 "X-Title": "Telegram Multibot"
             },
             json={
@@ -105,7 +98,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_text}
                 ]
-            }
+            },
+            timeout=15
         )
         if response.status_code == 200:
             answer = response.json()["choices"][0]["message"]["content"]
@@ -115,21 +109,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text("⚠️ Ошибка соединения. Попробуй снова.")
 
-# Flask webhook endpoint
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    json_str = request.get_data().decode('UTF-8')
-    update = Update.de_json(json_str, application.bot)
-    application.process_update(update)
-    return jsonify({"ok": True})
-
-# Инициализация Telegram-бота
-application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+# Регистрация обработчиков
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CallbackQueryHandler(button_handler))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-if __name__ == "__main__":
-    # Для локального запуска
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
+# Flask endpoint
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    json_str = request.get_data().decode('UTF-8')
+    update = Update.de_json(json_str, application.bot)
+    asyncio.run(process_update_async(update))
+    return jsonify({"ok": True})
 
+async def process_update_async(update):
+    await application.process_update(update)
+
+# Установка webhook при запуске
+@app.route('/setwebhook', methods=['GET'])
+def set_webhook():
+    try:
+        asyncio.run(application.bot.set_webhook(url=WEBHOOK_URL))
+        return jsonify({"ok": True, "webhook_url": WEBHOOK_URL})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+# Запуск
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    print(f"✅ Starting Flask on port {port}")
+    app.run(host="0.0.0.0", port=port, debug=False)
