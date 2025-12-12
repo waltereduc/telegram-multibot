@@ -1,6 +1,9 @@
 import os
 import asyncio
 import requests
+print("=" * 50)
+print("✅ BOT STARTING WITH CORRECT INITIALIZATION")
+print("=" * 50)
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
@@ -138,3 +141,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     print(f"✅ Starting Flask on port {port}")
     app.run(host="0.0.0.0", port=port, debug=False)
+
