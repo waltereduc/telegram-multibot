@@ -116,8 +116,8 @@ def webhook():
 async def process_update_async(update):
     await application.process_update(update)
 
-# Инициализация бота (БЕЗ .build()!)
-application = Application(token=TELEGRAM_BOT_TOKEN)
+# Инициализация бота (ПРАВИЛЬНЫЙ СПОСОБ ДЛЯ v20+)
+application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
 # Регистрация обработчиков
 application.add_handler(CommandHandler("start", start))
