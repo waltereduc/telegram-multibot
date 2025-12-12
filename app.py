@@ -6,8 +6,8 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 # ============ НАСТРОЙКИ — ВСТАВЬ СВОИ ТОКЕНЫ ЗДЕСЬ ============
-TELEGRAM_BOT_TOKEN = "8519104640:AAGfaA46S4AxU0DK8wOUKKSWgW93hR6qoWU"  # ← сюда вставь токен от @BotFather
-OPENROUTER_API_KEY = "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"  # ← сюда вставь ключ от OpenRouter
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # ← сюда вставь токен от @BotFather
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # ← сюда вставь ключ от OpenRouter
 # =============================================================
 
 app = Flask(__name__)
@@ -131,4 +131,5 @@ application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_m
 
 if __name__ == "__main__":
     # Для локального запуска (не используется на Render)
+
     app.run(port=5000)
