@@ -10,9 +10,13 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 # ============ НАСТРОЙКИ — БЕРЕМ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ============
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-# Убираем пробелы в URL с помощью strip()
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://telegram-multibot.onrender.com/webhook").strip()
+PORT = int(os.environ.get("PORT", 10000))
 # ===================================================================
+
+# Создаем глобальный event loop
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
 
 app = Flask(__name__)
 app.config['WEBHOOK_SET'] = False
@@ -21,6 +25,20 @@ app.config['WEBHOOK_SET'] = False
 @app.route('/')
 def health_check():
     return jsonify({"status": "ok", "message": "Bot is running"})
+
+# Endpoint для ручной установки webhook
+@app.route('/setwebhook', methods=['GET'])
+def set_webhook():
+    try:
+        # Используем глобальный loop
+        global application
+        loop.run_until_complete(application.bot.set_webhook(url=WEBHOOK_URL))
+        app.config['WEBHOOK_SET'] = True
+        return jsonify({"ok": True, "webhook_url": WEBHOOK_URL})
+    except Exception as e:
+        print(f"⚠️ Failed to set webhook manually: {e}")
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)})
 
 # Промпты для каждой темы
 PROMPTS = {
@@ -90,29 +108,62 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     system_prompt = PROMPTS[mode]
 
     try:
+        # Проверяем наличие API ключа
+        if not OPENROUTER_API_KEY or OPENROUTER_API_KEY.startswith("YOUR_"):
+            print("❌ OpenRouter API key not configured!")
+            await update.message.reply_text("⚠️ Сервис временно недоступен. Разработчик уже исправляет проблему.")
+            return
+
+        print(f"📤 Sending request to OpenRouter with mode: {mode}")
+        print(f"📝 User query: {user_text[:50]}...")
+
         response = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Authorization": f"Bearer {OPENROUTER_API_KEY.strip()}",
+                "Content-Type": "application/json",
                 "HTTP-Referer": "https://t.me/your_bot",
                 "X-Title": "Telegram Multibot"
             },
             json={
-                "model": "qwen/qwen-1_8b-chat",
+                "model": "qwen/qwen-1.5-1.8b-chat",  # Исправлено название модели
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_text}
                 ]
             },
-            timeout=15
+            timeout=30
         )
+        
+        print(f"📥 OpenRouter response status: {response.status_code}")
+        
         if response.status_code == 200:
-            answer = response.json()["choices"][0]["message"]["content"]
+            response_data = response.json()
+            print(f"💬 OpenRouter response: {response_data['choices'][0]['message']['content'][:100]}...")
+            
+            answer = response_data["choices"][0]["message"]["content"]
             await update.message.reply_text(answer)
         else:
-            await update.message.reply_text("⚠️ Не удалось получить ответ. Попробуй позже.")
+            error_detail = response.text[:200] if response.text else "No error details"
+            print(f"❌ OpenRouter error ({response.status_code}): {error_detail}")
+            
+            if response.status_code == 401:
+                await update.message.reply_text("🔒 Ошибка авторизации. Разработчик уже исправляет проблему.")
+            elif response.status_code == 429:
+                await update.message.reply_text("⏳ Слишком много запросов. Попробуй через минуту.")
+            else:
+                await update.message.reply_text("⚠️ Не удалось получить ответ. Попробуй позже.")
+                
+    except requests.exceptions.Timeout:
+        print("⏱️ Request to OpenRouter timed out")
+        await update.message.reply_text("⏱️ Запрос выполняется дольше обычного. Попробуй повторить через минуту.")
+    except requests.exceptions.ConnectionError:
+        print("🌐 Connection error to OpenRouter")
+        await update.message.reply_text("🌐 Проблемы с подключением к сервису. Попробуй позже.")
     except Exception as e:
-        await update.message.reply_text("⚠️ Ошибка соединения. Попробуй снова.")
+        print(f"🚨 General error in handle_message: {str(e)}")
+        traceback.print_exc()
+        await update.message.reply_text("⚠️ Произошла неожиданная ошибка. Разработчик уже в курсе.")
 
 # Webhook endpoint
 @app.route('/webhook', methods=['POST'])
@@ -126,19 +177,13 @@ def webhook():
             print("❌ No JSON data received")
             return jsonify({"error": "No JSON data"}), 400
         
-        # Логируем для отладки
-        print(f"📥 Webhook  {json.dumps(data, indent=2)}")
+        print(f"📥 Webhook data: {json.dumps(data, indent=2)}")
         
         # Преобразуем в объект Update
         update = Update.de_json(data, application.bot)
         
-        # Асинхронная обработка
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(application.process_update(update))
-        finally:
-            loop.close()
+        # Обрабатываем асинхронно в глобальном loop
+        loop.run_until_complete(application.process_update(update))
         
         print("✅ Webhook processed successfully")
         return jsonify({"ok": True})
@@ -148,7 +193,7 @@ def webhook():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-# Глобальная переменная для бота
+# Глобальная переменная для application
 application = None
 
 # Функция инициализации бота
@@ -164,34 +209,16 @@ def init_bot():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     # Инициализация приложения
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
     loop.run_until_complete(application.initialize())
     
     print("✅ Bot initialized successfully")
 
-# Функция установки webhook
-def setup_webhook():
-    global application
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(application.bot.set_webhook(url=WEBHOOK_URL))
-        print(f"✅ Webhook correctly set to: '{WEBHOOK_URL}'")
-        app.config['WEBHOOK_SET'] = True
-    except Exception as e:
-        print(f"⚠️ Failed to set webhook: {e}")
-        traceback.print_exc()
-
 # Запуск
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    print(f"✅ Starting Flask on port {port}")
+    print(f"✅ Starting Flask on port {PORT}")
     
     # Инициализируем бота
     init_bot()
     
-    # Устанавливаем webhook
-    setup_webhook()
-    
-    app.run(host="0.0.0.0", port=port, debug=False)
+    # Запускаем Flask
+    app.run(host="0.0.0.0", port=PORT, debug=False)
