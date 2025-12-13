@@ -21,14 +21,11 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
 PORT = int(os.getenv("PORT", 10000))
 # ===================================
 
-# Проверка обязательных переменных
 if not TELEGRAM_BOT_TOKEN or len(TELEGRAM_BOT_TOKEN.strip()) < 10:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN is missing or invalid!")
-
 if not WEBHOOK_URL:
     raise ValueError("❌ WEBHOOK_URL must be set (e.g., https://your-app.onrender.com)")
 
-# Промпты
 PROMPTS = {
     "explain": (
         "Ты — эксперт, который объясняет сложные темы очень просто, как ребёнку 10 лет. "
@@ -52,7 +49,6 @@ PROMPTS = {
     )
 }
 
-# Хранилище выбора пользователя (в памяти)
 user_modes = {}
 
 def get_theme_buttons():
@@ -73,7 +69,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
     mode = query.data
     user_modes[chat_id] = mode
-
     theme_names = {
         "explain": "«Объясни просто»",
         "emotional": "«Эмоциональная поддержка»",
@@ -86,20 +81,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_text = update.message.text
 
-    print(f"📨 NEW MESSAGE from chat {chat_id}: '{user_text}'")
-    
     if chat_id not in user_modes:
         await update.message.reply_text("Сначала выбери тему:", reply_markup=get_theme_buttons())
         return
 
     mode = user_modes[chat_id]
     system_prompt = PROMPTS[mode]
-    print(f"🎯 Selected mode: {mode}")
-    print(f"💭 System prompt: {system_prompt[:50]}...")
 
     try:
         if not OPENROUTER_API_KEY or len(OPENROUTER_API_KEY.strip()) < 10:
-            await update.message.reply_text("⚠️ Сервис временно недоступен. Разработчик уже исправляет проблему.")
+            await update.message.reply_text("⚠️ Сервис временно недоступен.")
             return
 
         response = requests.post(
@@ -119,49 +110,45 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             },
             timeout=30
         )
-        
+
         if response.status_code == 200:
             answer = response.json()["choices"][0]["message"]["content"]
             await update.message.reply_text(answer)
         else:
             if response.status_code == 401:
-                await update.message.reply_text("🔒 Ошибка авторизации. API-ключ недействителен.")
+                await update.message.reply_text("🔒 Неверный API-ключ OpenRouter.")
             elif response.status_code == 429:
-                await update.message.reply_text("⏳ Слишком много запросов. Попробуй через минуту.")
+                await update.message.reply_text("⏳ Слишком много запросов. Попробуй позже.")
             else:
-                await update.message.reply_text("⚠️ Временная ошибка. Попробуй позже.")
-                
+                await update.message.reply_text("⚠️ Ошибка нейросети. Попробуй позже.")
+
     except requests.exceptions.Timeout:
-        await update.message.reply_text("⏱️ Запрос выполняется дольше обычного. Попробуй через минуту.")
+        await update.message.reply_text("⏱️ Таймаут. Попробуй позже.")
     except requests.exceptions.ConnectionError:
-        await update.message.reply_text("🌐 Проблемы с подключением к нейросети. Попробуй позже.")
+        await update.message.reply_text("🌐 Нет связи с нейросетью.")
     except Exception as e:
-        print(f"🚨 ERROR in handle_message: {e}")
+        print(f"🚨 ERROR: {e}")
         traceback.print_exc()
-        await update.message.reply_text("⚠️ Произошла внутренняя ошибка. Разработчик уже знает.")
+        await update.message.reply_text("⚠️ Внутренняя ошибка.")
 
-# Глобальная переменная для корректного завершения
-application: Application = None
-
+# === ГЛАВНОЕ: ИСПРАВЛЕННЫЙ ЗАПУСК ===
 async def main():
-    global application
-    print("🚀 Starting Telegram bot with native webhook...")
+    print("🚀 Starting Telegram bot...")
 
-    application = (
-        Application.builder()
-        .token(TELEGRAM_BOT_TOKEN.strip())
-        .build()
-    )
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN.strip()).build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_error_handler(lambda update, context: print(f"⛔ Error: {context.error}"))
+    application.add_error_handler(lambda u, c: print(f"⛔ Error: {c.error}"))
 
-    print(f"🔗 Setting webhook to: {WEBHOOK_URL}")
+    # 🔑 КЛЮЧЕВОЕ: инициализируем Application (и его Updater)
+    await application.initialize()
+
+    print(f"🔗 Setting webhook: {WEBHOOK_URL}")
     await application.bot.set_webhook(url=WEBHOOK_URL)
 
-    print(f"👂 Listening on port {PORT} for Telegram updates...")
+    print(f"👂 Listening on 0.0.0.0:{PORT}")
     await application.updater.start_webhook(
         listen="0.0.0.0",
         port=PORT,
@@ -169,27 +156,23 @@ async def main():
         drop_pending_updates=True
     )
     await application.start()
-    print("✅ Bot is running...")
+    print("✅ Bot is running!")
 
-    # Блокируем выполнение, чтобы процесс не завершился
-    await asyncio.Event().wait()
-
-# Запуск без asyncio.run() — совместимость с Render
-def main_wrapper():
     try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        await asyncio.Event().wait()
+    finally:
+        await application.stop()
+        await application.shutdown()
 
+# === ЗАПУСК БЕЗ asyncio.run() ===
+def main_wrapper():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
         loop.run_until_complete(main())
     except KeyboardInterrupt:
         pass
     finally:
-        if application:
-            loop.run_until_complete(application.stop())
-            loop.run_until_complete(application.shutdown())
         loop.close()
 
 if __name__ == "__main__":
