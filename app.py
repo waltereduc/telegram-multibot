@@ -124,8 +124,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             answer = response.json()["choices"][0]["message"]["content"]
             await update.message.reply_text(answer)
         else:
-            error_text = response.text[:200] if response.text else "No details"
-            print(f"❌ OpenRouter error {response.status_code}: {error_text}")
             if response.status_code == 401:
                 await update.message.reply_text("🔒 Ошибка авторизации. API-ключ недействителен.")
             elif response.status_code == 429:
@@ -142,37 +140,57 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         traceback.print_exc()
         await update.message.reply_text("⚠️ Произошла внутренняя ошибка. Разработчик уже знает.")
 
-# ============ ОСНОВНАЯ ФУНКЦИЯ ============
+# Глобальная переменная для корректного завершения
+application: Application = None
+
 async def main():
+    global application
     print("🚀 Starting Telegram bot with native webhook...")
 
-    # Создаём Application
     application = (
         Application.builder()
         .token(TELEGRAM_BOT_TOKEN.strip())
         .build()
     )
 
-    # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    # Включаем логирование ошибок
     application.add_error_handler(lambda update, context: print(f"⛔ Error: {context.error}"))
 
-    # Устанавливаем и запускаем webhook
     print(f"🔗 Setting webhook to: {WEBHOOK_URL}")
     await application.bot.set_webhook(url=WEBHOOK_URL)
 
     print(f"👂 Listening on port {PORT} for Telegram updates...")
-    await application.run_webhook(
+    await application.updater.start_webhook(
         listen="0.0.0.0",
         port=PORT,
         webhook_url=WEBHOOK_URL,
-        # Опционально: cert, max_connections и т.д.
+        drop_pending_updates=True
     )
+    await application.start()
+    print("✅ Bot is running...")
 
-# ============ ТОЧКА ВХОДА ============
+    # Блокируем выполнение, чтобы процесс не завершился
+    await asyncio.Event().wait()
+
+# Запуск без asyncio.run() — совместимость с Render
+def main_wrapper():
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    try:
+        loop.run_until_complete(main())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if application:
+            loop.run_until_complete(application.stop())
+            loop.run_until_complete(application.shutdown())
+        loop.close()
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    main_wrapper()
