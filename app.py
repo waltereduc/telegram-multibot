@@ -10,6 +10,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 # ============ НАСТРОЙКИ — БЕРЕМ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ============
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+# Убираем пробелы в URL с помощью strip()
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://telegram-multibot.onrender.com/webhook").strip()
 # ===================================================================
 
@@ -113,13 +114,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text("⚠️ Ошибка соединения. Попробуй снова.")
 
-# Исправленный webhook endpoint
+# Webhook endpoint
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
         print("🔍 Received webhook request")
         
-        # Получаем данные как словарь (не строку!)
+        # Получаем данные как словарь
         data = request.get_json()
         if data is None:
             print("❌ No JSON data received")
@@ -147,16 +148,31 @@ def webhook():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-# Инициализация бота
-application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+# Глобальная переменная для бота
+application = None
 
-# Регистрация обработчиков
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CallbackQueryHandler(button_handler))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+# Функция инициализации бота
+def init_bot():
+    global application
+    
+    # Инициализация бота
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    # Регистрация обработчиков
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Инициализация приложения
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(application.initialize())
+    
+    print("✅ Bot initialized successfully")
 
 # Функция установки webhook
 def setup_webhook():
+    global application
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -171,5 +187,11 @@ def setup_webhook():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     print(f"✅ Starting Flask on port {port}")
+    
+    # Инициализируем бота
+    init_bot()
+    
+    # Устанавливаем webhook
     setup_webhook()
+    
     app.run(host="0.0.0.0", port=port, debug=False)
