@@ -1,6 +1,5 @@
 import os
 import asyncio
-import threading
 import requests
 import json
 import traceback
@@ -11,22 +10,12 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 # ============ НАСТРОЙКИ — БЕРЕМ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ============
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+# Убираем пробелы в URL с помощью strip()
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://telegram-multibot.onrender.com/webhook").strip()
 # ===================================================================
 
 app = Flask(__name__)
 app.config['WEBHOOK_SET'] = False
-
-# Глобальный event loop для всего приложения
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
-
-# Запускаем event loop в отдельном потоке
-def run_event_loop():
-    asyncio.set_event_loop(loop)
-    loop.run_forever()
-
-threading.Thread(target=run_event_loop, daemon=True).start()
 
 # Health check endpoint
 @app.route('/')
@@ -101,72 +90,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     system_prompt = PROMPTS[mode]
 
     try:
-        # Проверяем наличие API ключа
-        if not OPENROUTER_API_KEY or OPENROUTER_API_KEY.startswith("YOUR_"):
-            print("❌ OpenRouter API key not configured!")
-            await update.message.reply_text("⚠️ Сервис временно недоступен. Разработчик уже исправляет проблему.")
-            return
-
-        print(f"📤 Sending request to OpenRouter with model: qwen/qwen3-0.6b")
-        print(f"📝 User query: {user_text[:50]}...")
-
-        # Отправляем запрос с оптимальными параметрами для бесплатной модели
         response = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY.strip()}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://t.me/andromeda_multi_bot",
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "HTTP-Referer": "https://t.me/your_bot",
                 "X-Title": "Telegram Multibot"
             },
             json={
-                "model": "qwen/qwen3-0.6b",  # Бесплатная модель
-                "max_tokens": 256,  # Ограничиваем длину ответа
-                "temperature": 0.7,  # Баланс между креативностью и точностью
+                "model": "qwen/qwen-1_8b-chat",
                 "messages": [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_text[:300]}  # Обрезаем очень длинные запросы
+                    {"role": "user", "content": user_text}
                 ]
             },
-            timeout=30  # Увеличиваем таймаут
+            timeout=15
         )
-        
-        print(f"📥 OpenRouter response status: {response.status_code}")
-        
         if response.status_code == 200:
-            response_data = response.json()
-            print(f"💬 OpenRouter response: {response_data['choices'][0]['message']['content'][:100]}...")
-            
-            answer = response_data["choices"][0]["message"]["content"]
-            # Убираем лишние пробелы и переносы в начале/конце
-            answer = answer.strip()
+            answer = response.json()["choices"][0]["message"]["content"]
             await update.message.reply_text(answer)
         else:
-            error_detail = response.text[:200] if response.text else "No error details"
-            print(f"❌ OpenRouter error ({response.status_code}): {error_detail}")
-            
-            if response.status_code == 401:
-                await update.message.reply_text("🔒 Ошибка авторизации. Разработчик уже исправляет проблему.")
-            elif response.status_code == 429:
-                await update.message.reply_text(
-                    "🤖 Бот временно перегружен. Попробуй через 1-2 минуты!\n"
-                    "💡 *Совет:* короткие вопросы обрабатываются быстрее."
-                )
-            else:
-                await update.message.reply_text("⚠️ Не удалось получить ответ. Попробуй позже.")
-                
-    except requests.exceptions.Timeout:
-        print("⏱️ Request to OpenRouter timed out")
-        await update.message.reply_text("⏱️ Запрос выполняется дольше обычного. Попробуй повторить через минуту.")
-    except requests.exceptions.ConnectionError:
-        print("🌐 Connection error to OpenRouter")
-        await update.message.reply_text("🌐 Проблемы с подключением к сервису. Попробуй позже.")
+            await update.message.reply_text("⚠️ Не удалось получить ответ. Попробуй позже.")
     except Exception as e:
-        print(f"🚨 General error in handle_message: {str(e)}")
-        traceback.print_exc()
-        await update.message.reply_text("⚠️ Произошла неожиданная ошибка. Разработчик уже в курсе.")
+        await update.message.reply_text("⚠️ Ошибка соединения. Попробуй снова.")
 
-# Webhook endpoint (теперь полностью синхронный)
+# Webhook endpoint
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
@@ -179,17 +127,18 @@ def webhook():
             return jsonify({"error": "No JSON data"}), 400
         
         # Логируем для отладки
-        print(f"📥 Webhook data: {json.dumps(data, indent=2)}")
+        print(f"📥 Webhook  {json.dumps(data, indent=2)}")
         
         # Преобразуем в объект Update
         update = Update.de_json(data, application.bot)
         
-        # Обрабатываем обновление в асинхронном контексте
-        future = asyncio.run_coroutine_threadsafe(
-            application.process_update(update),
-            loop
-        )
-        future.result(timeout=30)  # Ждём результата с таймаутом
+        # Асинхронная обработка
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(application.process_update(update))
+        finally:
+            loop.close()
         
         print("✅ Webhook processed successfully")
         return jsonify({"ok": True})
@@ -197,18 +146,6 @@ def webhook():
     except Exception as e:
         print(f"🚨 WEBHOOK ERROR: {str(e)}")
         traceback.print_exc()
-        
-        # Даже при ошибке пытаемся отправить сообщение пользователю
-        try:
-            if 'update' in locals() and update.effective_chat:
-                future = asyncio.run_coroutine_threadsafe(
-                    update.effective_chat.send_message("⚠️ Произошла неожиданная ошибка. Разработчик уже в курсе."),
-                    loop
-                )
-                future.result(timeout=5)
-        except:
-            pass
-            
         return jsonify({"error": str(e)}), 500
 
 # Глобальная переменная для бота
@@ -227,11 +164,9 @@ def init_bot():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     # Инициализация приложения
-    future = asyncio.run_coroutine_threadsafe(
-        application.initialize(),
-        loop
-    )
-    future.result(timeout=10)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(application.initialize())
     
     print("✅ Bot initialized successfully")
 
@@ -239,11 +174,9 @@ def init_bot():
 def setup_webhook():
     global application
     try:
-        future = asyncio.run_coroutine_threadsafe(
-            application.bot.set_webhook(url=WEBHOOK_URL),
-            loop
-        )
-        future.result(timeout=10)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(application.bot.set_webhook(url=WEBHOOK_URL))
         print(f"✅ Webhook correctly set to: '{WEBHOOK_URL}'")
         app.config['WEBHOOK_SET'] = True
     except Exception as e:
