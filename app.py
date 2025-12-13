@@ -90,29 +90,70 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     system_prompt = PROMPTS[mode]
 
     try:
+        # Проверяем наличие API ключа
+        if not OPENROUTER_API_KEY or OPENROUTER_API_KEY.startswith("YOUR_"):
+            print("❌ OpenRouter API key not configured!")
+            await update.message.reply_text("⚠️ Сервис временно недоступен. Разработчик уже исправляет проблему.")
+            return
+
+        print(f"📤 Sending request to OpenRouter with model: qwen/qwen3-0.6b")
+        print(f"📝 User query: {user_text[:50]}...")
+
+        # Отправляем запрос с оптимальными параметрами для бесплатной модели
         response = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "HTTP-Referer": "https://t.me/your_bot",
+                "Authorization": f"Bearer {OPENROUTER_API_KEY.strip()}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://t.me/andromeda_multi_bot",
                 "X-Title": "Telegram Multibot"
             },
             json={
-                "model": "qwen/qwen-1_8b-chat",
+                "model": "qwen/qwen3-0.6b",  # Бесплатная модель
+                "max_tokens": 256,  # Ограничиваем длину ответа
+                "temperature": 0.7,  # Баланс между креативностью и точностью
                 "messages": [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_text}
+                    {"role": "user", "content": user_text[:300]}  # Обрезаем очень длинные запросы
                 ]
             },
-            timeout=15
+            timeout=30  # Увеличиваем таймаут
         )
+        
+        print(f"📥 OpenRouter response status: {response.status_code}")
+        
         if response.status_code == 200:
-            answer = response.json()["choices"][0]["message"]["content"]
+            response_data = response.json()
+            print(f"💬 OpenRouter response: {response_data['choices'][0]['message']['content'][:100]}...")
+            
+            answer = response_data["choices"][0]["message"]["content"]
+            # Убираем лишние пробелы и переносы в начале/конце
+            answer = answer.strip()
             await update.message.reply_text(answer)
         else:
-            await update.message.reply_text("⚠️ Не удалось получить ответ. Попробуй позже.")
+            error_detail = response.text[:200] if response.text else "No error details"
+            print(f"❌ OpenRouter error ({response.status_code}): {error_detail}")
+            
+            if response.status_code == 401:
+                await update.message.reply_text("🔒 Ошибка авторизации. Разработчик уже исправляет проблему.")
+            elif response.status_code == 429:
+                await update.message.reply_text(
+                    "🤖 Бот временно перегружен. Попробуй через 1-2 минуты!\n"
+                    "💡 *Совет:* короткие вопросы обрабатываются быстрее."
+                )
+            else:
+                await update.message.reply_text("⚠️ Не удалось получить ответ. Попробуй позже.")
+                
+    except requests.exceptions.Timeout:
+        print("⏱️ Request to OpenRouter timed out")
+        await update.message.reply_text("⏱️ Запрос выполняется дольше обычного. Попробуй повторить через минуту.")
+    except requests.exceptions.ConnectionError:
+        print("🌐 Connection error to OpenRouter")
+        await update.message.reply_text("🌐 Проблемы с подключением к сервису. Попробуй позже.")
     except Exception as e:
-        await update.message.reply_text("⚠️ Ошибка соединения. Попробуй снова.")
+        print(f"🚨 General error in handle_message: {str(e)}")
+        traceback.print_exc()
+        await update.message.reply_text("⚠️ Произошла неожиданная ошибка. Разработчик уже в курсе.")
 
 # Webhook endpoint
 @app.route('/webhook', methods=['POST'])
