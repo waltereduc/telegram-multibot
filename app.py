@@ -1,5 +1,6 @@
 import os
 import asyncio
+import threading
 import requests
 import json
 import traceback
@@ -10,12 +11,22 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 # ============ НАСТРОЙКИ — БЕРЕМ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ============
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-# Убираем пробелы в URL с помощью strip()
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://telegram-multibot.onrender.com/webhook").strip()
 # ===================================================================
 
 app = Flask(__name__)
 app.config['WEBHOOK_SET'] = False
+
+# Глобальный event loop для всего приложения
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+
+# Запускаем event loop в отдельном потоке
+def run_event_loop():
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
+
+threading.Thread(target=run_event_loop, daemon=True).start()
 
 # Health check endpoint
 @app.route('/')
@@ -155,7 +166,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         traceback.print_exc()
         await update.message.reply_text("⚠️ Произошла неожиданная ошибка. Разработчик уже в курсе.")
 
-# Webhook endpoint
+# Webhook endpoint (теперь полностью синхронный)
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
@@ -173,13 +184,12 @@ def webhook():
         # Преобразуем в объект Update
         update = Update.de_json(data, application.bot)
         
-        # Асинхронная обработка
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(application.process_update(update))
-        finally:
-            loop.close()
+        # Обрабатываем обновление в асинхронном контексте
+        future = asyncio.run_coroutine_threadsafe(
+            application.process_update(update),
+            loop
+        )
+        future.result(timeout=30)  # Ждём результата с таймаутом
         
         print("✅ Webhook processed successfully")
         return jsonify({"ok": True})
@@ -187,6 +197,18 @@ def webhook():
     except Exception as e:
         print(f"🚨 WEBHOOK ERROR: {str(e)}")
         traceback.print_exc()
+        
+        # Даже при ошибке пытаемся отправить сообщение пользователю
+        try:
+            if 'update' in locals() and update.effective_chat:
+                future = asyncio.run_coroutine_threadsafe(
+                    update.effective_chat.send_message("⚠️ Произошла неожиданная ошибка. Разработчик уже в курсе."),
+                    loop
+                )
+                future.result(timeout=5)
+        except:
+            pass
+            
         return jsonify({"error": str(e)}), 500
 
 # Глобальная переменная для бота
@@ -205,9 +227,11 @@ def init_bot():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     # Инициализация приложения
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(application.initialize())
+    future = asyncio.run_coroutine_threadsafe(
+        application.initialize(),
+        loop
+    )
+    future.result(timeout=10)
     
     print("✅ Bot initialized successfully")
 
@@ -215,9 +239,11 @@ def init_bot():
 def setup_webhook():
     global application
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(application.bot.set_webhook(url=WEBHOOK_URL))
+        future = asyncio.run_coroutine_threadsafe(
+            application.bot.set_webhook(url=WEBHOOK_URL),
+            loop
+        )
+        future.result(timeout=10)
         print(f"✅ Webhook correctly set to: '{WEBHOOK_URL}'")
         app.config['WEBHOOK_SET'] = True
     except Exception as e:
