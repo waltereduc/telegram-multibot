@@ -1,7 +1,8 @@
-# app.py
+# app.py (полностью исправленная версия)
 import os
 import json
 import requests
+import asyncio
 from flask import Flask, request, jsonify
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -9,17 +10,17 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 # === Конфигурация ===
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Например: https://your-render-app.onrender.com/webhook
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # https://telegram-multibot-001.onrender.com/webhook
 
-if not TELEGRAM_BOT_TOKEN or not OPENROUTER_API_KEY or not WEBHOOK_URL:
+if not all([TELEGRAM_BOT_TOKEN, OPENROUTER_API_KEY, WEBHOOK_URL]):
     raise ValueError("❌ Отсутствуют обязательные переменные окружения")
 
 app = Flask(__name__)
 application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-# === Обработчики ===
+# === Обработчики сообщений ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Напиши любой вопрос — отвечу через нейросеть.")
+    await update.message.reply_text("Привет! Я нейросеть-бот. Задай вопрос.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
@@ -42,28 +43,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             answer = response.json()["choices"][0]["message"]["content"]
             await update.message.reply_text(answer)
         else:
-            await update.message.reply_text(f"⚠️ Ошибка {response.status_code}. Попробуй позже.")
+            await update.message.reply_text(f"⚠️ Ошибка {response.status_code}")
     except Exception as e:
-        await update.message.reply_text("🚨 Не удалось получить ответ. Проверь логи.")
+        await update.message.reply_text("🚨 Ошибка при генерации ответа")
 
 # Регистрируем обработчики
 application.add_handler(CommandHandler("start", start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-# === Вебхук ===
+# === Вебхук: исправленная установка ===
+@app.route('/set_webhook')
+def set_webhook_route():
+    async def _set_webhook():
+        return await application.bot.set_webhook(WEBHOOK_URL)
+    
+    result = asyncio.run(_set_webhook())
+    return f"✅ Webhook set to {WEBHOOK_URL}: {result}"
+
+# === Вебхук: обработка входящих сообщений ===
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.get_json()
     update = Update.de_json(data, application.bot)
-    application.update_processor.process_update(application.update_queue, update)
+    
+    # Запускаем обработку в event loop
+    asyncio.create_task(application.process_update(update))
     return jsonify({"ok": True})
 
-# Инициализация — устанавливаем вебхук при старте
-@app.route('/set_webhook')
-def set_webhook():
-    webhook_info = application.bot.set_webhook(url=WEBHOOK_URL)
-    return f"✅ Webhook set to {WEBHOOK_URL}: {webhook_info}"
-
+# === Запуск ===
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, threaded=True)
