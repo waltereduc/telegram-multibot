@@ -28,8 +28,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Я нейросеть-бот. Задай вопрос.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
+    print(f"📥 ПОЛУЧЕНО СООБЩЕНИЕ ОТ ПОЛЬЗОВАТЕЛЯ: {update.message.text}")
+    print(f"🔍 ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ:")
+    print(f"   TELEGRAM_BOT_TOKEN = {TELEGRAM_BOT_TOKEN[:5]}...{TELEGRAM_BOT_TOKEN[-5:]}")
+    print(f"   OPENROUTER_API_KEY = {OPENROUTER_API_KEY[:5]}...{OPENROUTER_API_KEY[-5:]}")
+    print(f"   WEBHOOK_URL = '{WEBHOOK_URL}'")
+    
     try:
+        print("📡 Отправляю запрос в OpenRouter...")
         response = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={
@@ -40,18 +46,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             },
             json={
                 "model": "qwen/qwen-1.5-1.8b-chat",
-                "messages": [{"role": "user", "content": user_text}]
+                "messages": [{"role": "user", "content": update.message.text}]
             },
             timeout=30
         )
+        print(f"📥 Статус ответа OpenRouter: {response.status_code}")
+        
         if response.status_code == 200:
             answer = response.json()["choices"][0]["message"]["content"]
+            print(f"✅ Ответ от нейросети: {answer}")
+            
+            print("📤 Отправляю ответ пользователю в Telegram...")
             await update.message.reply_text(answer)
+            print("✅ Ответ успешно отправлен!")
         else:
-            await update.message.reply_text(f"⚠️ Ошибка {response.status_code}. Попробуй позже.")
+            error_detail = response.text[:200]
+            print(f"❌ ОШИБКА OPENROUTER ({response.status_code}): {error_detail}")
+            await update.message.reply_text(f"⚠️ Ошибка {response.status_code}")
     except Exception as e:
-        await update.message.reply_text(f"🚨 Внутренняя ошибка: {str(e)}")
-
+        print(f"🔥 КРИТИЧЕСКАЯ ОШИБКА: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        await update.message.reply_text(f"🚨 Не удалось обработать запрос: {str(e)}")
 # Регистрируем обработчики
 application.add_handler(CommandHandler("start", start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -88,3 +104,4 @@ def health_check():
 if __name__ == "__main__":
     # Запускаем приложение
     app.run(host="0.0.0.0", port=PORT, threaded=True)
+
