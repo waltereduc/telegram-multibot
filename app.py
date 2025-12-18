@@ -28,46 +28,59 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Я нейросеть-бот. Задай вопрос.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print(f"📥 ПОЛУЧЕНО СООБЩЕНИЕ ОТ ПОЛЬЗОВАТЕЛЯ: {update.message.text}")
-    print(f"🔍 ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ:")
-    print(f"   TELEGRAM_BOT_TOKEN = {TELEGRAM_BOT_TOKEN[:5]}...{TELEGRAM_BOT_TOKEN[-5:]}")
-    print(f"   OPENROUTER_API_KEY = {OPENROUTER_API_KEY[:5]}...{OPENROUTER_API_KEY[-5:]}")
-    print(f"   WEBHOOK_URL = '{WEBHOOK_URL}'")
+    user_text = update.message.text
+    print(f"📩 Получено сообщение: '{user_text}'")
     
     try:
-        print("📡 Отправляю запрос в OpenRouter...")
+        # Запрос к Qwen3-1.7B через Hugging Face
+        headers = {
+            "Authorization": f"Bearer {os.getenv('HUGGINGFACE_API_KEY')}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "inputs": f"<|im_start|>system\nТы дружелюбный помощник.<|im_end|>\n<|im_start|>user\n{user_text}<|im_end|>\n<|im_start|>assistant",
+            "parameters": {
+                "max_new_tokens": 100,
+                "temperature": 0.7,
+                "return_full_text": False,
+                "do_sample": True
+            }
+        }
+        
+        print("🔄 Отправляю запрос в Hugging Face...")
         response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": WEBHOOK_URL,
-                "X-Title": "TG NeuroBot"
-            },
-            json={
-                "model": "qwen/qwen-1.5-1.8b-chat",
-                "messages": [{"role": "user", "content": update.message.text}]
-            },
+            "https://api-inference.huggingface.co/models/Qwen/Qwen3-1.7B",
+            headers=headers,
+            json=payload,
             timeout=30
         )
-        print(f"📥 Статус ответа OpenRouter: {response.status_code}")
+        
+        print(f"📡 Статус ответа: {response.status_code}")
         
         if response.status_code == 200:
-            answer = response.json()["choices"][0]["message"]["content"]
-            print(f"✅ Ответ от нейросети: {answer}")
+            result = response.json()
+            # Обработка разных форматов ответа
+            if isinstance(result, list) and len(result) > 0:
+                answer = result[0].get("generated_text", "").strip()
+            else:
+                answer = result.get("generated_text", "").strip()
             
-            print("📤 Отправляю ответ пользователю в Telegram...")
+            print(f"✅ Ответ нейросети: '{answer}'")
+            
+            if not answer:
+                answer = "Извините, я не смог сформулировать ответ. Попробуйте задать вопрос по-другому."
+            
             await update.message.reply_text(answer)
-            print("✅ Ответ успешно отправлен!")
         else:
-            error_detail = response.text[:200]
-            print(f"❌ ОШИБКА OPENROUTER ({response.status_code}): {error_detail}")
-            await update.message.reply_text(f"⚠️ Ошибка {response.status_code}")
+            error_detail = response.json().get("error", "Неизвестная ошибка")
+            print(f"❌ Ошибка API: {error_detail}")
+            await update.message.reply_text(f"⚠️ Не удалось получить ответ: {error_detail}")
+            
     except Exception as e:
         print(f"🔥 КРИТИЧЕСКАЯ ОШИБКА: {str(e)}")
         import traceback
         print(traceback.format_exc())
-        await update.message.reply_text(f"🚨 Не удалось обработать запрос: {str(e)}")
+        await update.message.reply_text("🚨 Произошла внутренняя ошибка. Попробуй позже.")
 # Регистрируем обработчики
 application.add_handler(CommandHandler("start", start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -104,4 +117,5 @@ def health_check():
 if __name__ == "__main__":
     # Запускаем приложение
     app.run(host="0.0.0.0", port=PORT, threaded=True)
+
 
